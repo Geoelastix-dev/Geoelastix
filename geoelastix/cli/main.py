@@ -133,6 +133,20 @@ For more information, visit: https://github.com/yzh211/geoelastix
     )
 
     register_parser.add_argument(
+        '--min-width',
+        type=float,
+        default=0.0,
+        help='Terrain mask: drop parts narrower than this, in map units (default: 0)'
+    )
+
+    register_parser.add_argument(
+        '--min-area',
+        type=float,
+        default=0.0,
+        help='Terrain mask: drop isolated pieces smaller than this, in map units^2 (default: 0)'
+    )
+
+    register_parser.add_argument(
         '--mask',
         type=str,
         default=None,
@@ -247,6 +261,8 @@ def cmd_register(args):
                     'mask': {
                         'terrain': args.terrain_mask,
                         'min_slope': args.min_slope,
+                        'min_width': args.min_width,
+                        'min_area': args.min_area,
                         'file': args.mask
                     }
                 },

@@ -36,6 +36,8 @@ class ConfigParser:
                 'terrain': False,
                 'min_slope': 5.0,
                 'window': 30.0,
+                'min_width': 0.0,
+                'min_area': 0.0,
                 'file': None,
                 'mask_outputs': True,
             },
@@ -225,6 +227,8 @@ class ConfigParser:
             mask_cfg = config['registration'].get('mask') or {}
             if mask_cfg.get('window', 30.0) <= 0:
                 errors.append("mask.window must be positive (map units)")
+            if mask_cfg.get('min_width', 0.0) < 0 or mask_cfg.get('min_area', 0.0) < 0:
+                errors.append("mask.min_width and mask.min_area must be non-negative")
             if mask_cfg.get('file') and not Path(mask_cfg['file']).exists():
                 errors.append(f"Registration mask file not found: {mask_cfg['file']}")
 
@@ -341,6 +345,8 @@ registration:
     terrain: false                      # Exclude flat/featureless ground (water, floodplain)
     min_slope: 5.0                      # Minimum window-mean slope (degrees)
     window: 30.0                        # Slope averaging window (map units)
+    min_width: 0.0                      # Drop parts narrower than this, e.g. embankments (map units)
+    min_area: 0.0                       # Drop isolated pieces smaller than this (map units^2)
     file: null                          # Optional raster mask on any grid (nonzero = use)
     mask_outputs: true                  # Set displacements outside the mask to no-data
   log_to_console: false                 # Show elastix registration output (default: false)

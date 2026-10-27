@@ -174,3 +174,20 @@ def test_workflow_terrain_mask_ignores_changed_flat_ground(tmp_path):
     # Flat ground is outside the registration mask: no displacement reported
     assert np.all(np.isnan(wf.displacement_x[:, :180]))
     assert any((tmp_path / 'out').glob('*/registered/registration_mask.tif'))
+
+
+def test_terrain_mask_drops_narrow_strips_and_small_patches():
+    rng = np.random.default_rng(2)
+    dem = np.full((300, 300), 150.0)
+    dem[:, 150:] = 300 + gaussian_filter(rng.normal(size=(300, 150)), 8) * 200   # hills
+    dem[100:110, :120] += np.linspace(0, 3, 10)[:, None] * 3       # 15 m wide embankment
+    dem[20:40, 20:40] += gaussian_filter(rng.normal(size=(20, 20)), 2) * 50       # small patch
+    valid = np.ones(dem.shape, dtype=np.uint8)
+
+    plain = RegistrationMask.terrain_mask(dem, valid, PIXEL)
+    assert plain[100:110, 20:100].mean() > 0.5 and plain[20:40, 20:40].mean() > 0.5
+
+    # The 30 m slope window widens the 15 m embankment to ~40 m in the mask
+    filtered = RegistrationMask.terrain_mask(dem, valid, PIXEL, min_width=50.0, min_area=5000.0)
+    assert filtered[:, :130].sum() == 0
+    assert filtered[20:280, 170:].mean() > 0.9

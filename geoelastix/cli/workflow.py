@@ -185,7 +185,9 @@ class WorkflowOrchestrator:
             self.registration_mask &= RegistrationMask.terrain_mask(
                 self.fixed_array, self.fixed_mask, self.pixel_spacing[0],
                 min_slope=mask_cfg.get('min_slope', 5.0),
-                window=mask_cfg.get('window', 30.0)
+                window=mask_cfg.get('window', 30.0),
+                min_width=mask_cfg.get('min_width', 0.0),
+                min_area=mask_cfg.get('min_area', 0.0)
             )
 
         if mask_cfg.get('file'):

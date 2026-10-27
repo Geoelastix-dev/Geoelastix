@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   floodplains and built-up flats otherwise degrade the fit everywhere.
   Displacements outside the mask are set to no-data by default
   (`mask.mask_outputs`); the mask is written to `registered/registration_mask.tif`.
+  `mask.min_width` / `--min-width` and `mask.min_area` / `--min-area` drop narrow
+  strips (road embankments, levees) and small isolated patches from the terrain mask.
 - `registration.bending_weight` / `--bending-weight`: bending-energy penalty
   (TransformBendingEnergyPenalty) for smoother deformation fields.
 - `registration.grid_schedule` / `--grid-schedule`: B-spline GridSpacingSchedule.
