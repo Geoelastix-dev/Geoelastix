@@ -175,6 +175,62 @@ class ParameterManager:
         return parameter_object
 
     @staticmethod
+    def set_grid_schedule(parameter_object, schedule, index=0):
+        """
+        Set the B-spline GridSpacingSchedule (one factor per resolution).
+
+        The final grid spacing is multiplied by these factors, e.g. [8, 4, 2, 1]
+        starts coarse and refines the grid with the image pyramid.
+
+        Parameters
+        ----------
+        parameter_object : itk.ParameterObject
+            Parameter object
+        schedule : list of float
+            Grid spacing factor for each resolution, coarsest first
+        index : int, optional
+            Parameter map index. Default: 0
+        """
+        n_res = int(ParameterManager.get_parameter(
+            parameter_object, 'NumberOfResolutions', index)[0])
+        if len(schedule) != n_res:
+            raise ValueError(f"grid_schedule needs {n_res} values (NumberOfResolutions), "
+                             f"got {len(schedule)}")
+        return ParameterManager.set_parameter(
+            parameter_object, 'GridSpacingSchedule', [float(s) for s in schedule], index)
+
+    @staticmethod
+    def set_bending_weight(parameter_object, weight, index=0):
+        """
+        Add a bending-energy penalty to the similarity metric.
+
+        Switches to MultiMetricMultiResolutionRegistration with the existing
+        metric (weight 1) plus TransformBendingEnergyPenalty (``weight``).
+        Larger weights give smoother deformation fields. A weight of 0 leaves
+        the parameters unchanged.
+
+        Parameters
+        ----------
+        parameter_object : itk.ParameterObject
+            Parameter object
+        weight : float
+            Bending-energy weight relative to the similarity metric
+        index : int, optional
+            Parameter map index. Default: 0
+        """
+        if not weight:
+            return parameter_object
+        param_map = parameter_object.GetParameterMap(index)
+        metric = param_map['Metric'][0]
+        param_map['Registration'] = ['MultiMetricMultiResolutionRegistration']
+        param_map['Metric'] = [metric, 'TransformBendingEnergyPenalty']
+        param_map['Metric0Weight'] = ['1.0']
+        param_map['Metric1Weight'] = [str(float(weight))]
+        parameter_object.SetParameterMap(index, param_map)
+        logger.debug(f"Added bending-energy penalty, weight {weight}")
+        return parameter_object
+
+    @staticmethod
     def get_parameter(parameter_object, key, index=0):
         """
         Get parameter value from parameter object.

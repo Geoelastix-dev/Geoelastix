@@ -30,6 +30,15 @@ class ConfigParser:
             'metric': 'NCC',
             'parameter_file': None,
             'grid_spacing': None,
+            'grid_schedule': None,
+            'bending_weight': 0.0,
+            'mask': {
+                'terrain': False,
+                'min_slope': 5.0,
+                'window': 30.0,
+                'file': None,
+                'mask_outputs': True,
+            },
             'log_to_console': False,
         },
         'processing': {
@@ -203,6 +212,22 @@ class ConfigParser:
             if grid_spacing is not None and not grid_spacing > 0:
                 errors.append("grid_spacing must be positive (map units)")
 
+            grid_schedule = config['registration'].get('grid_schedule')
+            if grid_schedule is not None and (
+                    not isinstance(grid_schedule, (list, tuple))
+                    or not all(s > 0 for s in grid_schedule)):
+                errors.append("grid_schedule must be a list of positive factors, e.g. [8, 4, 2, 1]")
+
+            bending_weight = config['registration'].get('bending_weight') or 0.0
+            if bending_weight < 0:
+                errors.append("bending_weight must be non-negative")
+
+            mask_cfg = config['registration'].get('mask') or {}
+            if mask_cfg.get('window', 30.0) <= 0:
+                errors.append("mask.window must be positive (map units)")
+            if mask_cfg.get('file') and not Path(mask_cfg['file']).exists():
+                errors.append(f"Registration mask file not found: {mask_cfg['file']}")
+
         # Validate output formats
         if 'output' in config:
             formats = config['output'].get('formats', [])
@@ -310,6 +335,14 @@ registration:
   parameter_file: null                  # Optional custom parameter file
   grid_spacing: null                    # B-spline control point spacing in map units
                                         # (null = value in parameter file, in pixels)
+  grid_schedule: null                   # Grid spacing factor per resolution, e.g. [8, 4, 2, 1]
+  bending_weight: 0.0                   # Bending-energy penalty weight (0 = none; larger = smoother)
+  mask:                                 # Pixels the similarity metric is sampled from
+    terrain: false                      # Exclude flat/featureless ground (water, floodplain)
+    min_slope: 5.0                      # Minimum window-mean slope (degrees)
+    window: 30.0                        # Slope averaging window (map units)
+    file: null                          # Optional raster mask on any grid (nonzero = use)
+    mask_outputs: true                  # Set displacements outside the mask to no-data
   log_to_console: false                 # Show elastix registration output (default: false)
 
 processing:

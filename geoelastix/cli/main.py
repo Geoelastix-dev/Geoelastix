@@ -105,6 +105,41 @@ For more information, visit: https://github.com/yzh211/geoelastix
     )
 
     register_parser.add_argument(
+        '--grid-schedule',
+        type=float,
+        nargs='+',
+        default=None,
+        help='Grid spacing factor per resolution, coarsest first (e.g. 8 4 2 1)'
+    )
+
+    register_parser.add_argument(
+        '--bending-weight',
+        type=float,
+        default=0.0,
+        help='Bending-energy penalty weight (default: 0 = none; larger = smoother)'
+    )
+
+    register_parser.add_argument(
+        '--terrain-mask',
+        action='store_true',
+        help='Sample the similarity metric only on textured terrain (excludes water, flats)'
+    )
+
+    register_parser.add_argument(
+        '--min-slope',
+        type=float,
+        default=5.0,
+        help='Terrain mask: minimum window-mean slope in degrees (default: 5)'
+    )
+
+    register_parser.add_argument(
+        '--mask',
+        type=str,
+        default=None,
+        help='Registration mask raster (nonzero = use)'
+    )
+
+    register_parser.add_argument(
         '--log-level',
         type=str,
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
@@ -206,7 +241,14 @@ def cmd_register(args):
                 },
                 'registration': {
                     'method': args.method,
-                    'grid_spacing': args.grid_spacing
+                    'grid_spacing': args.grid_spacing,
+                    'grid_schedule': args.grid_schedule,
+                    'bending_weight': args.bending_weight,
+                    'mask': {
+                        'terrain': args.terrain_mask,
+                        'min_slope': args.min_slope,
+                        'file': args.mask
+                    }
                 },
                 'logging': {
                     'level': args.log_level,

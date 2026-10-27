@@ -7,7 +7,8 @@ import numpy as np
 import itk
 
 from ..io import RasterIO, NoDataHandler, CRSManager
-from ..registration import ElastixWrapper, TwoPassRegistration, ParameterManager
+from ..registration import (ElastixWrapper, TwoPassRegistration, ParameterManager,
+                            RegistrationMask)
 from ..displacement import HorizontalDisplacement, VerticalDisplacement, DisplacementMagnitude
 from ..tiling import TileManager
 from ..validation import QualityMetrics, QualityChecker
@@ -170,7 +171,30 @@ class WorkflowOrchestrator:
         self.pixel_spacing = CRSManager.get_pixel_size(gdal.Open(str(fixed_path)))
         logger.info(f"  Pixel spacing: {self.pixel_spacing[0]:.6f} x {self.pixel_spacing[1]:.6f}")
 
+        self._build_registration_mask(fixed_data)
+
         logger.info("\n✓ Input data loaded successfully")
+
+    def _build_registration_mask(self, fixed_data):
+        """Pixels the similarity metric is sampled from (fixed image valid data by default)."""
+        mask_cfg = self.config['registration'].get('mask') or {}
+        self.registration_mask = self.fixed_mask.astype(np.uint8)
+
+        if mask_cfg.get('terrain'):
+            logger.info("\nBuilding terrain registration mask...")
+            self.registration_mask &= RegistrationMask.terrain_mask(
+                self.fixed_array, self.fixed_mask, self.pixel_spacing[0],
+                min_slope=mask_cfg.get('min_slope', 5.0),
+                window=mask_cfg.get('window', 30.0)
+            )
+
+        if mask_cfg.get('file'):
+            logger.info(f"\nLoading registration mask: {mask_cfg['file']}")
+            user = RasterIO.read_raster(Path(mask_cfg['file']), reference=fixed_data)
+            use = np.isfinite(user['array']) & (user['array'] != 0) & (user['mask'] > 0)
+            self.registration_mask &= use.astype(np.uint8)
+
+        self.mask_outputs = bool(mask_cfg.get('mask_outputs', True))
 
     def _perform_registration(self):
         """Perform image registration."""
@@ -200,6 +224,16 @@ class WorkflowOrchestrator:
                 f"  B-spline grid spacing: {grid_spacing} map units "
                 f"= {grid_spacing_px:.2f} pixels"
             )
+
+        grid_schedule = self.config['registration'].get('grid_schedule')
+        if grid_schedule:
+            ParameterManager.set_grid_schedule(self.parameter_object, grid_schedule)
+            logger.info(f"  Grid spacing schedule: {grid_schedule}")
+
+        bending_weight = self.config['registration'].get('bending_weight') or 0.0
+        if bending_weight > 0:
+            ParameterManager.set_bending_weight(self.parameter_object, bending_weight)
+            logger.info(f"  Bending-energy penalty weight: {bending_weight}")
 
         height, width = self.image_shape
         self.displacement_x = np.full(self.image_shape, np.nan, dtype=np.float32)
@@ -240,7 +274,8 @@ class WorkflowOrchestrator:
 
         fixed_mask = self.fixed_mask[block]
         moving_mask = self.moving_mask[block]
-        if fixed_mask.mean() < min_valid or moving_mask.mean() < min_valid:
+        reg_mask = self.registration_mask[block]
+        if reg_mask.mean() < min_valid or moving_mask.mean() < min_valid:
             logger.info("  Skipped - not enough valid data")
             return
 
@@ -251,7 +286,8 @@ class WorkflowOrchestrator:
         moving_itk = RasterIO.array_to_itk_image(
             NoDataHandler.fill_nodata(self.moving_array[block], moving_mask)
         )
-        fixed_mask_itk = RasterIO.array_to_itk_image(fixed_mask, is_mask=True)
+        # The metric is sampled only inside the registration mask
+        fixed_mask_itk = RasterIO.array_to_itk_image(reg_mask, is_mask=True)
         moving_mask_itk = RasterIO.array_to_itk_image(moving_mask, is_mask=True)
 
         # Perform two-pass registration
@@ -271,6 +307,9 @@ class WorkflowOrchestrator:
             transform_parameters
         )
         valid = (fixed_mask > 0) & (itk.array_from_image(warped_mask) > 0.999)
+        if self.mask_outputs:
+            # Displacements outside the mask are B-spline interpolation, not measurement
+            valid &= reg_mask > 0
 
         horiz = HorizontalDisplacement.compute_from_transform(
             fixed_itk, transform_parameters,
@@ -467,6 +506,13 @@ class WorkflowOrchestrator:
                 self.fixed_crs,
                 nodata_value=self.fixed_nodata,
                 compression=compression
+            )
+
+        if 'geotiff' in output_formats:
+            RasterIO.write_geotiff(
+                self.registered_dir / 'registration_mask.tif',
+                self.registration_mask, self.fixed_geotransform, self.fixed_crs,
+                nodata_value=255, compression=compression
             )
 
         # Save displacement fields

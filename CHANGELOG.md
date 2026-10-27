@@ -31,7 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `min_valid_fraction`); overlaps are trimmed when mosaicking.
 - `registration.grid_spacing` / `--grid-spacing`: B-spline control point spacing
   in map units.
-- Regression tests for sign/units, no-data, grid warping and tiling.
+- Registration mask (`registration.mask`, `--terrain-mask`, `--min-slope`, `--mask`):
+  sample the similarity metric only on textured terrain (window-mean slope above a
+  threshold) and/or a user mask raster. NCC is a global metric, so water,
+  floodplains and built-up flats otherwise degrade the fit everywhere.
+  Displacements outside the mask are set to no-data by default
+  (`mask.mask_outputs`); the mask is written to `registered/registration_mask.tif`.
+- `registration.bending_weight` / `--bending-weight`: bending-energy penalty
+  (TransformBendingEnergyPenalty) for smoother deformation fields.
+- `registration.grid_schedule` / `--grid-schedule`: B-spline GridSpacingSchedule.
+- Regression tests for sign/units, no-data, grid warping, tiling, the terrain
+  mask and the regularisation options.
 
 ## [0.1.0] - 2024-11-20
 

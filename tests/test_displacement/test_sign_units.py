@@ -6,7 +6,7 @@ from scipy.ndimage import gaussian_filter, shift
 from osgeo import gdal, osr
 
 from geoelastix.io import RasterIO, NoDataHandler
-from geoelastix.registration import ParameterManager, TwoPassRegistration
+from geoelastix.registration import ParameterManager, TwoPassRegistration, RegistrationMask
 from geoelastix.displacement import HorizontalDisplacement
 from geoelastix.tiling import TileManager
 from geoelastix.cli.config_parser import ConfigParser
@@ -118,3 +118,59 @@ def test_workflow_east_north_up(tmp_path, tile_threshold):
 
     out = gdal.Open(str(next((tmp_path / 'out').glob('*/displacement/displacement_x.tif'))))
     assert out.GetGeoTransform() == pytest.approx(GEOTRANSFORM)
+
+
+def test_terrain_mask_excludes_flat_ground():
+    older, _ = synthetic_pair(shape=(300, 300))
+    dem = older.copy()
+    dem[:, :100] = 150.0                       # flat "water" surface
+    valid = np.ones(dem.shape, dtype=np.uint8)
+    valid[:10] = 0
+    mask = RegistrationMask.terrain_mask(dem, valid, PIXEL, min_slope=5.0, window=30.0)
+    assert mask[:, :80].sum() == 0
+    assert mask[20:, 140:].mean() > 0.9
+    assert mask[:10].sum() == 0
+
+
+def test_bending_weight_and_grid_schedule_parameters():
+    params = ParameterManager.create_parameter_object('NA')
+    ParameterManager.set_grid_schedule(params, [8, 4, 2, 1])
+    ParameterManager.set_bending_weight(params, 0.5)
+    pm = params.GetParameterMap(0)
+    assert [float(s) for s in pm['GridSpacingSchedule']] == [8, 4, 2, 1]
+    assert pm['Registration'][0] == 'MultiMetricMultiResolutionRegistration'
+    assert list(pm['Metric']) == ['AdvancedNormalizedCorrelation', 'TransformBendingEnergyPenalty']
+    assert float(pm['Metric1Weight'][0]) == 0.5
+    with pytest.raises(ValueError):
+        ParameterManager.set_grid_schedule(params, [4, 2, 1])
+
+
+def test_workflow_terrain_mask_ignores_changed_flat_ground(tmp_path):
+    """Moving terrain next to a flat area whose surface changed (e.g. water level)."""
+    older, newer = synthetic_pair(shape=(500, 500))
+    rng = np.random.default_rng(1)
+    older[:, :200] = 150.0
+    newer[:, :200] = 150.0 + gaussian_filter(rng.normal(size=(500, 200)), 3) * 0.5
+    _write_geotiff(tmp_path / 'new.tif', newer, GEOTRANSFORM)
+    _write_geotiff(tmp_path / 'old.tif', older, GEOTRANSFORM)
+
+    config = ConfigParser.merge_with_defaults({
+        'job': {'id': 'masked', 'output_dir': str(tmp_path / 'out')},
+        'input': {'fixed_image': str(tmp_path / 'new.tif'),
+                  'moving_image': str(tmp_path / 'old.tif')},
+        'registration': {'grid_spacing': 48.0, 'grid_schedule': [8, 4, 2, 1],
+                         'bending_weight': 0.1, 'mask': {'terrain': True}},
+        'output': {'formats': ['geotiff']},
+        'visualization': {'generate_plots': False},
+        'logging': {'save_to_file': False, 'log_to_console': False},
+    })
+    ConfigParser.validate_config(config)
+    wf = WorkflowOrchestrator(config)
+    wf.run()
+
+    terrain = (slice(60, 440), slice(260, 440))
+    assert np.nanmedian(wf.displacement_x[terrain]) == pytest.approx(3 * PIXEL, abs=0.3)
+    assert np.nanmedian(wf.displacement_y[terrain]) == pytest.approx(-2 * PIXEL, abs=0.3)
+    # Flat ground is outside the registration mask: no displacement reported
+    assert np.all(np.isnan(wf.displacement_x[:, :180]))
+    assert any((tmp_path / 'out').glob('*/registered/registration_mask.tif'))
