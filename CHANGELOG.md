@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Grid alignment**: a moving raster on a different grid (extent, pixel size, CRS)
   is warped onto the fixed grid instead of being silently misaligned.
 - NaN pixels are written as the no-data value in GeoTIFF/ASC outputs.
+- Warping onto the fixed grid never reads overview pyramids (`.ovr`), which can be
+  misaligned with the full-resolution data (seen with ArcGIS overviews: a spurious
+  metre-scale shift).
 
 ### Added
 

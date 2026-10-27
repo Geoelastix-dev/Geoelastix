@@ -209,6 +209,9 @@ class RasterIO:
             srcNodata=src_nodata,
             dstNodata=np.nan,
             outputType=gdal.GDT_Float32,
+            # Never resample from overview pyramids: they may be misaligned
+            # (seen with ArcGIS .ovr files) and are coarser than the data
+            overviewLevel='NONE',
         )
         return gdal.Warp('', dataset, options=warp_options)
 
