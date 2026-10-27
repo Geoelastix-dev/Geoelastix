@@ -78,14 +78,8 @@ class QuiverPlot:
             x_coords = np.arange(0, width, subsample) * dx
             y_coords = np.arange(0, height, subsample) * dy
 
-            # Determine units
-            # Note: For US data, spacing is typically in feet (e.g., 30 ft)
-            # For metric data, spacing would be in meters (e.g., 10 m)
-            # Default to feet for typical DEM spacing values > 1
-            if abs(dx) > 1.0:  # Assume feet or meters
-                unit = 'ft'  # Default to feet for US standard data
-            else:
-                unit = 'deg'  # Geographic coordinates
+            # Units follow the raster CRS (e.g. m for UTM, ft for State Plane)
+            unit = 'map units'
 
             xlabel = f'Easting ({unit})'
             ylabel = f'Northing ({unit})'
@@ -110,11 +104,10 @@ class QuiverPlot:
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
         # Plot quiver
-        # Match reference code convention: negate X, negate Y for inverted axis
-        # Reference code: plt.quiver(..., -x, y, ...) with normal axis
-        # Since we use invert_yaxis(), we need to negate V as well
+        # displacement_x/y are East/North motion. Rows increase southward and
+        # the y-axis is inverted below, so North must be drawn as -V.
         quiver = ax.quiver(
-            X, Y, -U, -V,
+            X, Y, U, -V,
             magnitude,
             cmap=colormap,
             scale=scale,
@@ -217,9 +210,9 @@ class QuiverPlot:
         V = disp_y[::subsample, ::subsample]
 
         # Plot quiver
-        # Match reference code convention: negate X, negate Y for inverted axis
+        # East/North motion; -V because the y-axis (rows) is inverted
         ax.quiver(
-            X, Y, -U, -V,  # -x for geo convention, -y for inverted axis
+            X, Y, U, -V,
             color=arrow_color,
             scale=scale,
             scale_units='xy' if scale else 'width',
@@ -298,8 +291,8 @@ class QuiverPlot:
 
         # Compute magnitude and direction
         magnitude = np.sqrt(displacement_x**2 + displacement_y**2)
-        # Match reference convention: use -displacement_x for direction calculation
-        direction = np.arctan2(displacement_y, -displacement_x)  # radians
+        # Angle from East, counterclockwise (displacement is East/North)
+        direction = np.arctan2(displacement_y, displacement_x)  # radians
 
         # Apply mask
         if mask is not None:
@@ -384,8 +377,8 @@ class QuiverPlot:
             return None
 
         # Compute directions (in radians, then degrees)
-        # Match reference convention: use -dx for direction calculation
-        directions = np.arctan2(dy, -dx)
+        # Angle from East, counterclockwise (displacement is East/North)
+        directions = np.arctan2(dy, dx)
         directions_deg = (np.degrees(directions) + 360) % 360  # 0-360
 
         # Compute magnitudes

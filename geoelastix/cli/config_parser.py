@@ -29,11 +29,13 @@ class ConfigParser:
             'method': 'NA',
             'metric': 'NCC',
             'parameter_file': None,
+            'grid_spacing': None,
             'log_to_console': False,
         },
         'processing': {
             'tile_threshold': 5000,
             'tile_overlap': 100,
+            'min_valid_fraction': 0.05,
             'num_threads': 4,
         },
         'output': {
@@ -197,6 +199,10 @@ class ConfigParser:
                 if not param_path.exists():
                     errors.append(f"Parameter file not found: {param_path}")
 
+            grid_spacing = config['registration'].get('grid_spacing')
+            if grid_spacing is not None and not grid_spacing > 0:
+                errors.append("grid_spacing must be positive (map units)")
+
         # Validate output formats
         if 'output' in config:
             formats = config['output'].get('formats', [])
@@ -222,6 +228,8 @@ class ConfigParser:
             tile_overlap = config['processing'].get('tile_overlap', 100)
             if tile_overlap < 0:
                 errors.append("tile_overlap must be non-negative")
+            elif tile_overlap >= tile_threshold:
+                errors.append("tile_overlap must be smaller than tile_threshold")
 
         # Validate logging level
         if 'logging' in config:
@@ -300,11 +308,14 @@ registration:
   method: "NA"                          # NA, AF, RG, or TS
   metric: "NCC"                         # NCC or MI
   parameter_file: null                  # Optional custom parameter file
+  grid_spacing: null                    # B-spline control point spacing in map units
+                                        # (null = value in parameter file, in pixels)
   log_to_console: false                 # Show elastix registration output (default: false)
 
 processing:
-  tile_threshold: 5000                  # Enable tiling if dimension > this
-  tile_overlap: 100                     # Pixel overlap between tiles
+  tile_threshold: 5000                  # Tile size; tiling enabled if dimension > this
+  tile_overlap: 100                     # Pixel overlap between tiles (>= 2x grid spacing)
+  min_valid_fraction: 0.05              # Skip tiles with less valid data than this
   num_threads: 4                        # Number of parallel threads
 
 output:

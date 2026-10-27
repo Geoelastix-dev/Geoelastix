@@ -93,14 +93,8 @@ class ContourPlot:
             # For DEM: x from 0 to width*dx, y from height*dy to 0 (flipped)
             extent = [0, width * dx, height * abs(dy), 0]
 
-            # Determine units
-            if abs(dx) > 1.0:  # Assume feet or meters
-                if abs(dx) < 100:
-                    unit = 'm'
-                else:
-                    unit = 'ft'
-            else:
-                unit = 'deg'
+            # Units follow the raster CRS (e.g. m for UTM, ft for State Plane)
+            unit = 'map units'
 
             xlabel = f'Easting ({unit})'
             ylabel = f'Northing ({unit})'

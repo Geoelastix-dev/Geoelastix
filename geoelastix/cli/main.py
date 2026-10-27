@@ -98,6 +98,13 @@ For more information, visit: https://github.com/yzh211/geoelastix
     )
 
     register_parser.add_argument(
+        '--grid-spacing',
+        type=float,
+        default=None,
+        help='B-spline control point spacing in map units (default: value in parameter file)'
+    )
+
+    register_parser.add_argument(
         '--log-level',
         type=str,
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
@@ -198,7 +205,8 @@ def cmd_register(args):
                     'moving_image': args.moving
                 },
                 'registration': {
-                    'method': args.method
+                    'method': args.method,
+                    'grid_spacing': args.grid_spacing
                 },
                 'logging': {
                     'level': args.log_level,
