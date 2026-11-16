@@ -46,6 +46,12 @@ def setup_logging(log_level="INFO", log_file=None, log_dir=None, log_to_console=
 
     # Console handler (if enabled)
     if log_to_console:
+        # Windows consoles (cp1252) cannot encode the check marks used in log
+        # messages; replace unencodable characters instead of raising
+        try:
+            sys.stdout.reconfigure(errors='replace')
+        except (AttributeError, ValueError):
+            pass
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(getattr(logging, log_level.upper()))
         console_handler.setFormatter(console_formatter)

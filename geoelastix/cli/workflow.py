@@ -506,7 +506,8 @@ class WorkflowOrchestrator:
                 self.registered_array,
                 self.fixed_geotransform,
                 self.fixed_crs,
-                nodata_value=self.fixed_nodata,
+                # Fixed rasters without a no-data value (and no NaNs) give None
+                nodata_value=-9999 if self.fixed_nodata is None else self.fixed_nodata,
                 compression=compression
             )
 
