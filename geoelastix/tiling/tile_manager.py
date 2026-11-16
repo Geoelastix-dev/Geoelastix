@@ -182,6 +182,33 @@ class TileManager:
         moving_tile = self.extract_tile(moving_array, tile)
         return fixed_tile, moving_tile
 
+    def get_core_slice(self, tile):
+        """
+        Get the part of a tile to keep when mosaicking results.
+
+        Half of the overlap is trimmed on every side that borders another
+        tile, removing the poorly constrained registration edges. The cores
+        of all tiles cover the full image without gaps.
+
+        Parameters
+        ----------
+        tile : Tile
+            Tile specification
+
+        Returns
+        -------
+        tuple of slice
+            (row_slice, col_slice) in full-image coordinates
+        """
+        half = self.overlap // 2
+
+        row_start = tile.row_start + half if tile.row_start > 0 else 0
+        row_end = tile.row_end - half if tile.row_end < self.height else self.height
+        col_start = tile.col_start + half if tile.col_start > 0 else 0
+        col_end = tile.col_end - half if tile.col_end < self.width else self.width
+
+        return (slice(row_start, row_end), slice(col_start, col_end))
+
     def get_tile_info(self, tile):
         """
         Get information about a tile.

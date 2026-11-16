@@ -17,39 +17,52 @@ class HorizontalDisplacement:
     """
 
     @staticmethod
-    def compute_from_transform(fixed_image, transform_parameters, spacing=None):
+    def compute_from_transform(fixed_image, transform_parameters, spacing=None,
+                               geotransform=None):
         """
         Compute horizontal displacement from transformation parameters.
+
+        The elastix transform maps a point x of the fixed image to the
+        corresponding point x + u(x) of the moving image, so u points from the
+        fixed epoch back to the moving epoch, in the image's (column, row)
+        frame. With the fixed image being the NEWER DEM and the moving image
+        the OLDER DEM, the ground motion between the two epochs is -u. This
+        method returns that motion converted to map coordinates:
+
+        - displacement_x: Easting change (positive = moved East)
+        - displacement_y: Northing change (positive = moved North)
 
         Parameters
         ----------
         fixed_image : itk.Image
-            Fixed (reference) image used as template for output
+            Fixed (reference, newer) image used as template for output
         transform_parameters : itk.ParameterObject
             Elastix transformation parameters
         spacing : tuple, optional
-            Pixel spacing (pixel_width, pixel_height) in map units.
-            If None, uses spacing from fixed_image.
+            Pixel size (pixel_width, pixel_height) in map units, used when no
+            geotransform is given (assumes a north-up raster).
+        geotransform : tuple, optional
+            GDAL geotransform of the fixed raster. Takes precedence over
+            ``spacing``. If neither is given, the output is in pixels.
 
         Returns
         -------
         dict
             Dictionary containing:
-            - 'displacement_x': numpy array of X displacement (East-West)
-            - 'displacement_y': numpy array of Y displacement (North-South)
+            - 'displacement_x': numpy array of East displacement (map units)
+            - 'displacement_y': numpy array of North displacement (map units)
             - 'spacing': pixel spacing used
         """
         logger.info("Computing horizontal displacement from deformation field...")
 
-        # Get image dimensions and spacing
-        fixed_array = itk.array_from_image(fixed_image)
-        image_shape = fixed_array.shape
-
-        if spacing is None:
-            spacing = fixed_image.GetSpacing()
-            logger.info(f"  Using image spacing: {spacing}")
-        else:
-            logger.info(f"  Using provided spacing: {spacing}")
+        if geotransform is None:
+            if spacing is not None:
+                geotransform = (0.0, abs(spacing[0]), 0.0, 0.0, 0.0, -abs(spacing[1]))
+                logger.info(f"  Using provided spacing: {spacing}")
+            else:
+                geotransform = (0.0, 1.0, 0.0, 0.0, 0.0, -1.0)
+                logger.warning("  No spacing/geotransform given - displacement in pixels")
+        spacing = (abs(geotransform[1]), abs(geotransform[5]))
 
         # Use ITK's transformix_deformation_field (matches reference code)
         logger.info("  Generating deformation field using transformix...")
@@ -65,13 +78,24 @@ class HorizontalDisplacement:
             # Convert to numpy array
             deformation_array = itk.array_from_image(deformation_field)
 
-            # Extract X and Y components
-            # ITK convention: deformation_field[:, :, 0] is X, [:, :, 1] is Y
-            displacement_x = deformation_array[:, :, 0].astype(np.float32)
-            displacement_y = deformation_array[:, :, 1].astype(np.float32)
+            # ITK convention: [:, :, 0] is along columns, [:, :, 1] is along rows,
+            # in the ITK image's physical units. Convert to pixels.
+            itk_spacing = np.array(fixed_image.GetSpacing(), dtype=np.float64)
+            u_col = deformation_array[:, :, 0] / itk_spacing[0]
+            u_row = deformation_array[:, :, 1] / itk_spacing[1]
+            del deformation_array
 
-            logger.info(f"  Displacement X range: [{np.min(displacement_x):.3f}, {np.max(displacement_x):.3f}]")
-            logger.info(f"  Displacement Y range: [{np.min(displacement_y):.3f}, {np.max(displacement_y):.3f}]")
+            # Ground motion (moving -> fixed epoch) is the negative of u
+            motion_col = -u_col
+            motion_row = -u_row
+
+            # Pixel offsets -> map offsets via the geotransform
+            gt = geotransform
+            displacement_x = (motion_col * gt[1] + motion_row * gt[2]).astype(np.float32)
+            displacement_y = (motion_col * gt[4] + motion_row * gt[5]).astype(np.float32)
+
+            logger.info(f"  East displacement range: [{np.min(displacement_x):.3f}, {np.max(displacement_x):.3f}]")
+            logger.info(f"  North displacement range: [{np.min(displacement_y):.3f}, {np.max(displacement_y):.3f}]")
 
             return {
                 'displacement_x': displacement_x,

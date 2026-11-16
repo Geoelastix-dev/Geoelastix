@@ -98,6 +98,62 @@ For more information, visit: https://github.com/yzh211/geoelastix
     )
 
     register_parser.add_argument(
+        '--grid-spacing',
+        type=float,
+        default=None,
+        help='B-spline control point spacing in map units (default: value in parameter file)'
+    )
+
+    register_parser.add_argument(
+        '--grid-schedule',
+        type=float,
+        nargs='+',
+        default=None,
+        help='Grid spacing factor per resolution, coarsest first (e.g. 8 4 2 1)'
+    )
+
+    register_parser.add_argument(
+        '--bending-weight',
+        type=float,
+        default=0.0,
+        help='Bending-energy penalty weight (default: 0 = none; larger = smoother)'
+    )
+
+    register_parser.add_argument(
+        '--terrain-mask',
+        action='store_true',
+        help='Sample the similarity metric only on textured terrain (excludes water, flats)'
+    )
+
+    register_parser.add_argument(
+        '--min-slope',
+        type=float,
+        default=5.0,
+        help='Terrain mask: minimum window-mean slope in degrees (default: 5)'
+    )
+
+    register_parser.add_argument(
+        '--min-width',
+        type=float,
+        default=0.0,
+        help='Terrain mask: drop parts narrower than this, in map units (default: 0)'
+    )
+
+    register_parser.add_argument(
+        '--min-area',
+        type=float,
+        default=0.0,
+        help='Terrain mask: drop isolated pieces smaller than this, in map units^2 (default: 0)'
+    )
+
+    register_parser.add_argument(
+        '--mask',
+        type=str,
+        default=None,
+        help='Registration mask raster (nonzero = use)'
+    )
+
+    register_parser.add_argument(
         '--log-level',
         type=str,
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
@@ -198,7 +254,17 @@ def cmd_register(args):
                     'moving_image': args.moving
                 },
                 'registration': {
-                    'method': args.method
+                    'method': args.method,
+                    'grid_spacing': args.grid_spacing,
+                    'grid_schedule': args.grid_schedule,
+                    'bending_weight': args.bending_weight,
+                    'mask': {
+                        'terrain': args.terrain_mask,
+                        'min_slope': args.min_slope,
+                        'min_width': args.min_width,
+                        'min_area': args.min_area,
+                        'file': args.mask
+                    }
                 },
                 'logging': {
                     'level': args.log_level,

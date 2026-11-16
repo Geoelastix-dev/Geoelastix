@@ -4,9 +4,11 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import numpy as np
+import itk
 
 from ..io import RasterIO, NoDataHandler, CRSManager
-from ..registration import ElastixWrapper, TwoPassRegistration, ParameterManager
+from ..registration import (ElastixWrapper, TwoPassRegistration, ParameterManager,
+                            RegistrationMask)
 from ..displacement import HorizontalDisplacement, VerticalDisplacement, DisplacementMagnitude
 from ..tiling import TileManager
 from ..validation import QualityMetrics, QualityChecker
@@ -148,7 +150,8 @@ class WorkflowOrchestrator:
         # Load moving image
         logger.info("\nLoading moving image...")
         moving_path = Path(self.config['input']['moving_image'])
-        moving_data = RasterIO.read_raster(moving_path)
+        # Warped onto the fixed grid if extent/pixel size/CRS differ
+        moving_data = RasterIO.read_raster(moving_path, reference=fixed_data)
 
         self.moving_array = moving_data['array']
         self.moving_mask = moving_data['mask']
@@ -168,7 +171,32 @@ class WorkflowOrchestrator:
         self.pixel_spacing = CRSManager.get_pixel_size(gdal.Open(str(fixed_path)))
         logger.info(f"  Pixel spacing: {self.pixel_spacing[0]:.6f} x {self.pixel_spacing[1]:.6f}")
 
+        self._build_registration_mask(fixed_data)
+
         logger.info("\n✓ Input data loaded successfully")
+
+    def _build_registration_mask(self, fixed_data):
+        """Pixels the similarity metric is sampled from (fixed image valid data by default)."""
+        mask_cfg = self.config['registration'].get('mask') or {}
+        self.registration_mask = self.fixed_mask.astype(np.uint8)
+
+        if mask_cfg.get('terrain'):
+            logger.info("\nBuilding terrain registration mask...")
+            self.registration_mask &= RegistrationMask.terrain_mask(
+                self.fixed_array, self.fixed_mask, self.pixel_spacing[0],
+                min_slope=mask_cfg.get('min_slope', 5.0),
+                window=mask_cfg.get('window', 30.0),
+                min_width=mask_cfg.get('min_width', 0.0),
+                min_area=mask_cfg.get('min_area', 0.0)
+            )
+
+        if mask_cfg.get('file'):
+            logger.info(f"\nLoading registration mask: {mask_cfg['file']}")
+            user = RasterIO.read_raster(Path(mask_cfg['file']), reference=fixed_data)
+            use = np.isfinite(user['array']) & (user['array'] != 0) & (user['mask'] > 0)
+            self.registration_mask &= use.astype(np.uint8)
+
+        self.mask_outputs = bool(mask_cfg.get('mask_outputs', True))
 
     def _perform_registration(self):
         """Perform image registration."""
@@ -176,53 +204,133 @@ class WorkflowOrchestrator:
         logger.info("STEP 3: Perform Registration")
         logger.info("="*70)
 
-        # Convert to ITK images using proper types
-        # Note: Spacing=[1,1] in pixel units is correct for registration
-        # Physical spacing only matters for displacement measurements
-        logger.info("\nConverting to ITK format...")
-        self.fixed_itk = RasterIO.array_to_itk_image(
-            self.fixed_array, is_mask=False
-        )
-        moving_itk = RasterIO.array_to_itk_image(
-            self.moving_array, is_mask=False
-        )
-
-        # Convert masks using proper types (itk.UC)
-        fixed_mask_itk = RasterIO.array_to_itk_image(
-            self.fixed_mask, is_mask=True
-        )
-        moving_mask_itk = RasterIO.array_to_itk_image(
-            self.moving_mask, is_mask=True
-        )
-
         # Get parameter object
         method = self.config['registration']['method']
         custom_param = self.config['registration'].get('parameter_file')
 
         logger.info(f"\nRegistration method: {method}")
-        parameter_object = ParameterManager.create_parameter_object(
+        self.parameter_object = ParameterManager.create_parameter_object(
             method=method, custom_file=custom_param
         )
 
-        # Perform two-pass registration
-        logger.info("\nPerforming two-pass registration...")
-        two_pass = TwoPassRegistration(parameter_object)
+        # Images are registered with ITK spacing [1, 1], so elastix "physical
+        # units" are pixels. Convert a grid spacing given in map units.
+        grid_spacing = self.config['registration'].get('grid_spacing')
+        if grid_spacing is not None:
+            grid_spacing_px = float(grid_spacing) / self.pixel_spacing[0]
+            ParameterManager.set_parameter(
+                self.parameter_object, 'FinalGridSpacingInPhysicalUnits',
+                f"{grid_spacing_px:.4f}"
+            )
+            logger.info(
+                f"  B-spline grid spacing: {grid_spacing} map units "
+                f"= {grid_spacing_px:.2f} pixels"
+            )
 
+        grid_schedule = self.config['registration'].get('grid_schedule')
+        if grid_schedule:
+            ParameterManager.set_grid_schedule(self.parameter_object, grid_schedule)
+            logger.info(f"  Grid spacing schedule: {grid_schedule}")
+
+        bending_weight = self.config['registration'].get('bending_weight') or 0.0
+        if bending_weight > 0:
+            ParameterManager.set_bending_weight(self.parameter_object, bending_weight)
+            logger.info(f"  Bending-energy penalty weight: {bending_weight}")
+
+        height, width = self.image_shape
+        self.displacement_x = np.full(self.image_shape, np.nan, dtype=np.float32)
+        self.displacement_y = np.full(self.image_shape, np.nan, dtype=np.float32)
+        self.registered_array = np.full(self.image_shape, np.nan, dtype=np.float32)
+        self.valid_mask = np.zeros(self.image_shape, dtype=np.uint8)
+
+        tile_size = self.config['processing']['tile_threshold']
+        overlap = self.config['processing']['tile_overlap']
+        tile_manager = TileManager(self.image_shape, tile_size=tile_size, overlap=overlap)
+
+        if not tile_manager.needs_tiling:
+            self._register_block((slice(0, height), slice(0, width)),
+                                 (slice(0, height), slice(0, width)))
+        else:
+            n_tiles = len(tile_manager.tiles)
+            for k, tile in enumerate(tile_manager.tiles, start=1):
+                logger.info(f"\nTile {k}/{n_tiles} {tile.index}: "
+                            f"rows {tile.row_start}-{tile.row_end}, "
+                            f"cols {tile.col_start}-{tile.col_end}")
+                self._register_block(tile.get_slice(),
+                                     tile_manager.get_core_slice(tile))
+
+        logger.info("\n✓ Registration completed")
+
+    def _register_block(self, block, core):
+        """
+        Register one block (whole image or tile) and store its core region.
+
+        Parameters
+        ----------
+        block : tuple of slice
+            Rows/cols of the block in the full image
+        core : tuple of slice
+            Rows/cols of the block's output that are kept (overlap trimmed)
+        """
+        min_valid = self.config['processing'].get('min_valid_fraction', 0.05)
+
+        fixed_mask = self.fixed_mask[block]
+        moving_mask = self.moving_mask[block]
+        reg_mask = self.registration_mask[block]
+        if reg_mask.mean() < min_valid or moving_mask.mean() < min_valid:
+            logger.info("  Skipped - not enough valid data")
+            return
+
+        # Elastix must not see no-data values; fill them, masks exclude them
+        fixed_itk = RasterIO.array_to_itk_image(
+            NoDataHandler.fill_nodata(self.fixed_array[block], fixed_mask)
+        )
+        moving_itk = RasterIO.array_to_itk_image(
+            NoDataHandler.fill_nodata(self.moving_array[block], moving_mask)
+        )
+        # The metric is sampled only inside the registration mask
+        fixed_mask_itk = RasterIO.array_to_itk_image(reg_mask, is_mask=True)
+        moving_mask_itk = RasterIO.array_to_itk_image(moving_mask, is_mask=True)
+
+        # Perform two-pass registration
+        two_pass = TwoPassRegistration(self.parameter_object)
         reg_results = two_pass.register(
-            self.fixed_itk, moving_itk,
+            fixed_itk, moving_itk,
             fixed_mask=fixed_mask_itk,
             moving_mask=moving_mask_itk,
             log_to_console=self.config['registration']['log_to_console']
         )
+        transform_parameters = reg_results['transform_parameters']
+        registered = RasterIO.itk_image_to_array(reg_results['registered_image'])
 
-        # Store results
-        self.registered_image = reg_results['registered_image']
-        self.transform_parameters = reg_results['transform_parameters']
+        # Pixels whose source location is outside the valid moving data
+        warped_mask = itk.transformix_filter(
+            RasterIO.array_to_itk_image(moving_mask.astype(np.float32)),
+            transform_parameters
+        )
+        valid = (fixed_mask > 0) & (itk.array_from_image(warped_mask) > 0.999)
+        if self.mask_outputs:
+            # Displacements outside the mask are B-spline interpolation, not measurement
+            valid &= reg_mask > 0
 
-        # Convert registered image to array
-        self.registered_array = RasterIO.itk_image_to_array(self.registered_image)
+        horiz = HorizontalDisplacement.compute_from_transform(
+            fixed_itk, transform_parameters,
+            geotransform=self.fixed_geotransform
+        )
 
-        logger.info("\n✓ Registration completed")
+        rows, cols = core
+        local = (slice(rows.start - block[0].start, rows.stop - block[0].start),
+                 slice(cols.start - block[1].start, cols.stop - block[1].start))
+        keep = valid[local]
+
+        for target, source in ((self.displacement_x, horiz['displacement_x']),
+                               (self.displacement_y, horiz['displacement_y']),
+                               (self.registered_array, registered)):
+            target[core] = np.where(keep, source[local], np.nan)
+        self.valid_mask[core] = keep
+
+        # Keep the last transform for reporting
+        self.transform_parameters = transform_parameters
 
     def _calculate_displacement(self):
         """Calculate displacement fields."""
@@ -230,28 +338,18 @@ class WorkflowOrchestrator:
         logger.info("STEP 4: Calculate Displacement")
         logger.info("="*70)
 
-        # Horizontal displacement (X, Y)
-        logger.info("\nCalculating horizontal displacement...")
-        horiz_result = HorizontalDisplacement.compute_from_transform(
-            self.fixed_itk,
-            self.transform_parameters,
-            spacing=self.pixel_spacing
-        )
-
-        self.displacement_x = horiz_result['displacement_x']
-        self.displacement_y = horiz_result['displacement_y']
-
-        # Get statistics
+        # Horizontal displacement (X, Y) was computed per block in step 3
         horiz_stats = HorizontalDisplacement.get_statistics(
             self.displacement_x, self.displacement_y,
-            mask=self.fixed_mask
+            mask=self.valid_mask
         )
 
-        # Vertical displacement (Z)
+        # Vertical displacement (Z) = newer elevation - older elevation of the
+        # same (displaced) ground point
         logger.info("\nCalculating vertical displacement...")
         vert_result = VerticalDisplacement.compute_from_arrays(
             self.fixed_array, self.registered_array,
-            mask=self.fixed_mask
+            mask=self.valid_mask
         )
 
         self.displacement_z = vert_result['displacement_z']
@@ -281,9 +379,9 @@ class WorkflowOrchestrator:
         # Compute all metrics
         self.metrics = QualityMetrics.compute_all_metrics(
             self.fixed_array,
-            self.registered_array,
+            np.nan_to_num(self.registered_array, nan=0.0),
             fixed_mask=self.fixed_mask,
-            registered_mask=self.moving_mask,
+            registered_mask=self.valid_mask,
             image_shape=self.image_shape
         )
 
@@ -408,8 +506,16 @@ class WorkflowOrchestrator:
                 self.registered_array,
                 self.fixed_geotransform,
                 self.fixed_crs,
-                nodata_value=self.fixed_nodata,
+                # Fixed rasters without a no-data value (and no NaNs) give None
+                nodata_value=-9999 if self.fixed_nodata is None else self.fixed_nodata,
                 compression=compression
+            )
+
+        if 'geotiff' in output_formats:
+            RasterIO.write_geotiff(
+                self.registered_dir / 'registration_mask.tif',
+                self.registration_mask, self.fixed_geotransform, self.fixed_crs,
+                nodata_value=255, compression=compression
             )
 
         # Save displacement fields

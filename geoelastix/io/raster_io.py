@@ -23,7 +23,7 @@ class RasterIO:
     """
 
     @staticmethod
-    def read_raster(file_path, band=1):
+    def read_raster(file_path, band=1, reference=None):
         """
         Read raster file and return array with metadata.
 
@@ -33,6 +33,11 @@ class RasterIO:
             Path to raster file (GeoTIFF or ASC)
         band : int, optional
             Band number to read (1-indexed). Default: 1
+        reference : dict, optional
+            Result of ``read_raster`` for the reference (fixed) raster. If the
+            grid of this raster (CRS, extent, pixel size, shape) differs from
+            the reference, it is warped onto the reference grid with bilinear
+            resampling, so both rasters are pixel-aligned for registration.
 
         Returns
         -------
@@ -57,6 +62,24 @@ class RasterIO:
         dataset = gdal.Open(str(file_path), gdal.GA_ReadOnly)
         if dataset is None:
             raise IOError(f"Failed to open raster file: {file_path}")
+
+        if reference is not None:
+            same_grid, same_crs = RasterIO._compare_grid(dataset, reference)
+            if not same_grid or not same_crs:
+                if same_grid:
+                    # Identical pixel grid, but CRS labelled differently (often a
+                    # missing/incomplete CRS definition): do not reproject
+                    logger.warning(
+                        "Moving raster CRS differs from the fixed raster CRS but the "
+                        "pixel grid is identical - assuming the same coordinates."
+                    )
+                else:
+                    dataset = RasterIO._warp_to_reference(
+                        dataset, reference, band, reproject=same_crs is False
+                        and RasterIO._is_projected(dataset.GetProjection())
+                        and RasterIO._is_projected(reference['crs'])
+                    )
+                    band = 1
 
         # Get raster band
         raster_band = dataset.GetRasterBand(band)
@@ -119,6 +142,80 @@ class RasterIO:
         }
 
     @staticmethod
+    def _compare_grid(dataset, reference, tolerance=1e-6):
+        """
+        Compare a dataset with a reference raster.
+
+        Returns
+        -------
+        tuple of bool
+            (same_grid, same_crs): same_grid compares shape and geotransform;
+            same_crs is True when either CRS is undefined.
+        """
+        height, width = reference['shape']
+        gt = dataset.GetGeoTransform()
+        ref_gt = reference['geotransform']
+        pixel = max(abs(ref_gt[1]), abs(ref_gt[5]))
+        same_grid = (
+            (dataset.RasterYSize, dataset.RasterXSize) == (height, width)
+            and all(abs(a - b) <= tolerance * pixel for a, b in zip(gt, ref_gt))
+        )
+
+        same_crs = True
+        crs = dataset.GetProjection()
+        if crs and reference['crs']:
+            srs = osr.SpatialReference(wkt=crs)
+            ref_srs = osr.SpatialReference(wkt=reference['crs'])
+            same_crs = bool(srs.IsSame(ref_srs))
+
+        return same_grid, same_crs
+
+    @staticmethod
+    def _is_projected(crs_wkt):
+        """True if the WKT describes a projected CRS that can be reprojected."""
+        if not crs_wkt:
+            return False
+        return bool(osr.SpatialReference(wkt=crs_wkt).IsProjected())
+
+    @staticmethod
+    def _warp_to_reference(dataset, reference, band=1, reproject=True):
+        """Warp a dataset onto the reference grid (in memory, bilinear)."""
+        height, width = reference['shape']
+        gt = reference['geotransform']
+        if gt[2] != 0 or gt[4] != 0:
+            raise ValueError("Rotated reference geotransforms are not supported")
+
+        x_min = gt[0]
+        x_max = gt[0] + width * gt[1]
+        y_max = gt[3]
+        y_min = gt[3] + height * gt[5]
+
+        src_nodata = dataset.GetRasterBand(band).GetNoDataValue()
+
+        logger.warning(
+            "Moving raster is not on the fixed raster grid - warping it onto "
+            f"the fixed grid ({width} x {height}, pixel {gt[1]:.4f} x {abs(gt[5]):.4f}). "
+            "Check that both rasters use the same vertical units."
+        )
+
+        warp_options = gdal.WarpOptions(
+            format='MEM',
+            outputBounds=(x_min, y_min, x_max, y_max),
+            width=width,
+            height=height,
+            dstSRS=reference['crs'] if reproject else None,
+            resampleAlg='bilinear',
+            srcBands=[band],
+            srcNodata=src_nodata,
+            dstNodata=np.nan,
+            outputType=gdal.GDT_Float32,
+            # Never resample from overview pyramids: they may be misaligned
+            # (seen with ArcGIS .ovr files) and are coarser than the data
+            overviewLevel='NONE',
+        )
+        return gdal.Warp('', dataset, options=warp_options)
+
+    @staticmethod
     def write_geotiff(file_path, array, geotransform, crs_wkt, nodata_value=-9999,
                       compression='LZW', dtype=None):
         """
@@ -145,6 +242,10 @@ class RasterIO:
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Writing GeoTIFF: {file_path}")
+
+        # NaN marks invalid pixels internally; store them as the no-data value
+        if np.issubdtype(array.dtype, np.floating) and nodata_value is not None:
+            array = np.where(np.isnan(array), nodata_value, array).astype(array.dtype)
 
         # Determine GDAL data type
         if dtype is None:
@@ -223,6 +324,9 @@ class RasterIO:
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Writing ASC file: {file_path}")
+
+        if np.issubdtype(array.dtype, np.floating):
+            array = np.where(np.isnan(array), nodata_value, array)
 
         height, width = array.shape
         xllcorner = geotransform[0]

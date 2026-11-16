@@ -65,8 +65,11 @@ class NoDataHandler:
                 # Already handled above
                 pass
             elif np.issubdtype(array.dtype, np.floating):
-                # Use tolerance for floating-point comparison
-                nodata_mask = np.abs(array - nodata_value) < tolerance
+                # Compare in the array's own precision, with a tolerance relative
+                # to the no-data magnitude (e.g. -3.4028235e+38 for Float32)
+                nodata_cast = np.asarray(nodata_value).astype(array.dtype)
+                tol = tolerance * max(1.0, abs(float(nodata_cast)))
+                nodata_mask = np.abs(array - nodata_cast) <= tol
                 mask[nodata_mask] = 0
             else:
                 # Integer comparison
@@ -74,6 +77,45 @@ class NoDataHandler:
                 mask[nodata_mask] = 0
 
         return mask
+
+    @staticmethod
+    def fill_nodata(array, mask):
+        """
+        Replace no-data pixels with the value of the nearest valid pixel.
+
+        Elastix must never see no-data values (e.g. -3.4e38): the image pyramid
+        smooths them into the valid region and corrupts the registration. The
+        masks still exclude these pixels from the metric; the fill only keeps
+        smoothing and interpolation near the edges well behaved.
+
+        Parameters
+        ----------
+        array : numpy.ndarray
+            Input raster array
+        mask : numpy.ndarray
+            Binary mask (1 = valid data, 0 = no-data)
+
+        Returns
+        -------
+        numpy.ndarray
+            Float32 copy of the array with no-data pixels filled
+        """
+        from scipy import ndimage
+
+        filled = array.astype(np.float32, copy=True)
+        invalid = mask == 0
+
+        if not invalid.any():
+            return filled
+        if invalid.all():
+            filled[:] = 0.0
+            return filled
+
+        indices = ndimage.distance_transform_edt(
+            invalid, return_distances=False, return_indices=True
+        )
+        filled[invalid] = filled[indices[0][invalid], indices[1][invalid]]
+        return filled
 
     @staticmethod
     def auto_detect_nodata(array, check_edges=True):

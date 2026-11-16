@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Horizontal displacement units and sign**: `displacement_x`/`displacement_y` were
+  written in pixels and pointed from the fixed (newer) to the moving (older) epoch,
+  with Y along image rows (southward). They are now East/North ground motion from
+  the moving to the fixed epoch, in map units (requires fixed = newer DEM).
+  Quiver, direction and rose plots updated accordingly.
+- **No-data handling**: no-data values (e.g. -3.4e38) were passed to elastix and
+  smeared into valid data by the image pyramid. They are now filled before
+  registration; outputs are masked where the fixed DEM or the warped moving DEM is
+  invalid. No-data detection compares in the raster's own precision.
+- **Grid alignment**: a moving raster on a different grid (extent, pixel size, CRS)
+  is warped onto the fixed grid instead of being silently misaligned.
+- NaN pixels are written as the no-data value in GeoTIFF/ASC outputs.
+- Warping onto the fixed grid never reads overview pyramids (`.ovr`), which can be
+  misaligned with the full-resolution data (seen with ArcGIS overviews: a spurious
+  metre-scale shift).
+
+### Added
+
+- Tiled processing in the workflow (`processing.tile_threshold`, `tile_overlap`,
+  `min_valid_fraction`); overlaps are trimmed when mosaicking.
+- `registration.grid_spacing` / `--grid-spacing`: B-spline control point spacing
+  in map units.
+- Registration mask (`registration.mask`, `--terrain-mask`, `--min-slope`, `--mask`):
+  sample the similarity metric only on textured terrain (window-mean slope above a
+  threshold) and/or a user mask raster. NCC is a global metric, so water,
+  floodplains and built-up flats otherwise degrade the fit everywhere.
+  Displacements outside the mask are set to no-data by default
+  (`mask.mask_outputs`); the mask is written to `registered/registration_mask.tif`.
+  `mask.min_width` / `--min-width` and `mask.min_area` / `--min-area` drop narrow
+  strips (road embankments, levees) and small isolated patches from the terrain mask.
+- `registration.bending_weight` / `--bending-weight`: bending-energy penalty
+  (TransformBendingEnergyPenalty) for smoother deformation fields.
+- `registration.grid_schedule` / `--grid-schedule`: B-spline GridSpacingSchedule.
+- Regression tests for sign/units, no-data, grid warping, tiling, the terrain
+  mask and the regularisation options.
+
 ## [0.1.0] - 2024-11-20
 
 ### Added - Phase 5: Documentation & Packaging

@@ -29,11 +29,24 @@ class ConfigParser:
             'method': 'NA',
             'metric': 'NCC',
             'parameter_file': None,
+            'grid_spacing': None,
+            'grid_schedule': None,
+            'bending_weight': 0.0,
+            'mask': {
+                'terrain': False,
+                'min_slope': 5.0,
+                'window': 30.0,
+                'min_width': 0.0,
+                'min_area': 0.0,
+                'file': None,
+                'mask_outputs': True,
+            },
             'log_to_console': False,
         },
         'processing': {
             'tile_threshold': 5000,
             'tile_overlap': 100,
+            'min_valid_fraction': 0.05,
             'num_threads': 4,
         },
         'output': {
@@ -197,6 +210,28 @@ class ConfigParser:
                 if not param_path.exists():
                     errors.append(f"Parameter file not found: {param_path}")
 
+            grid_spacing = config['registration'].get('grid_spacing')
+            if grid_spacing is not None and not grid_spacing > 0:
+                errors.append("grid_spacing must be positive (map units)")
+
+            grid_schedule = config['registration'].get('grid_schedule')
+            if grid_schedule is not None and (
+                    not isinstance(grid_schedule, (list, tuple))
+                    or not all(s > 0 for s in grid_schedule)):
+                errors.append("grid_schedule must be a list of positive factors, e.g. [8, 4, 2, 1]")
+
+            bending_weight = config['registration'].get('bending_weight') or 0.0
+            if bending_weight < 0:
+                errors.append("bending_weight must be non-negative")
+
+            mask_cfg = config['registration'].get('mask') or {}
+            if mask_cfg.get('window', 30.0) <= 0:
+                errors.append("mask.window must be positive (map units)")
+            if mask_cfg.get('min_width', 0.0) < 0 or mask_cfg.get('min_area', 0.0) < 0:
+                errors.append("mask.min_width and mask.min_area must be non-negative")
+            if mask_cfg.get('file') and not Path(mask_cfg['file']).exists():
+                errors.append(f"Registration mask file not found: {mask_cfg['file']}")
+
         # Validate output formats
         if 'output' in config:
             formats = config['output'].get('formats', [])
@@ -222,6 +257,8 @@ class ConfigParser:
             tile_overlap = config['processing'].get('tile_overlap', 100)
             if tile_overlap < 0:
                 errors.append("tile_overlap must be non-negative")
+            elif tile_overlap >= tile_threshold:
+                errors.append("tile_overlap must be smaller than tile_threshold")
 
         # Validate logging level
         if 'logging' in config:
@@ -300,11 +337,24 @@ registration:
   method: "NA"                          # NA, AF, RG, or TS
   metric: "NCC"                         # NCC or MI
   parameter_file: null                  # Optional custom parameter file
+  grid_spacing: null                    # B-spline control point spacing in map units
+                                        # (null = value in parameter file, in pixels)
+  grid_schedule: null                   # Grid spacing factor per resolution, e.g. [8, 4, 2, 1]
+  bending_weight: 0.0                   # Bending-energy penalty weight (0 = none; larger = smoother)
+  mask:                                 # Pixels the similarity metric is sampled from
+    terrain: false                      # Exclude flat/featureless ground (water, floodplain)
+    min_slope: 5.0                      # Minimum window-mean slope (degrees)
+    window: 30.0                        # Slope averaging window (map units)
+    min_width: 0.0                      # Drop parts narrower than this, e.g. embankments (map units)
+    min_area: 0.0                       # Drop isolated pieces smaller than this (map units^2)
+    file: null                          # Optional raster mask on any grid (nonzero = use)
+    mask_outputs: true                  # Set displacements outside the mask to no-data
   log_to_console: false                 # Show elastix registration output (default: false)
 
 processing:
-  tile_threshold: 5000                  # Enable tiling if dimension > this
-  tile_overlap: 100                     # Pixel overlap between tiles
+  tile_threshold: 5000                  # Tile size; tiling enabled if dimension > this
+  tile_overlap: 100                     # Pixel overlap between tiles (>= 2x grid spacing)
+  min_valid_fraction: 0.05              # Skip tiles with less valid data than this
   num_threads: 4                        # Number of parallel threads
 
 output:
